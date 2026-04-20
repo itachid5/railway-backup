@@ -429,10 +429,8 @@ function _bk_capture_manifests() {
 
     apt-mark showmanual 2>/dev/null | sort > "${manifest_dir}/apt-manual.txt" || true
     sudo dpkg --get-selections 2>/dev/null > "${manifest_dir}/dpkg-selections.txt" || true
-    pip3 freeze 2>/dev/null | sort > "${manifest_dir}/pip-freeze.txt" || true
-    sed -i -E '/^(awscli|botocore|s3transfer|jmespath|docutils|colorama|rsa|pyasn1|python-dateutil|urllib3|pyyaml|six)(==|$)/Id' "${manifest_dir}/pip-freeze.txt" 2>/dev/null || true
-    npm -g ls --depth=0 --parseable 2>/dev/null | tail -n +2 | xargs -r -n 1 basename | sort -u > "${manifest_dir}/npm-global.txt" || true
-    sed -i -E '/^(@openai\/codex|codex)$/d' "${manifest_dir}/npm-global.txt" 2>/dev/null || true
+    pip3 freeze 2>/dev/null | sort | grep -viE '^(awscli|botocore|s3transfer|jmespath|docutils|colorama|rsa|pyasn1|python-dateutil|urllib3|PyYAML|six)==' > "${manifest_dir}/pip-freeze.txt" || true
+    npm -g ls --depth=0 --parseable 2>/dev/null | tail -n +2 | xargs -r -n 1 basename | sort -u | grep -v '^codex$' > "${manifest_dir}/npm-global.txt" || true
     tmux list-sessions -F "#{session_name}" 2>/dev/null | sort > "${manifest_dir}/tmux-sessions.txt" || true
 }
 
@@ -536,7 +534,7 @@ function bk() {
     case "$action" in
         save)
             if [ -z "$server" ] || [ -z "$name" ]; then
-                echo -e "\e[1;31m✘ Usage: bk save <server> <name>\e[0m"
+                echo -e "\e[1;31m✘ Usage: bk save <server> <n>\e[0m"
                 return 1
             fi
 
@@ -582,7 +580,7 @@ function bk() {
             ;;
         inspect)
             if [ -z "$server" ] || [ -z "$name" ]; then
-                echo -e "\e[1;31m✘ Usage: bk inspect <server> <name>\e[0m"
+                echo -e "\e[1;31m✘ Usage: bk inspect <server> <n>\e[0m"
                 return 1
             fi
 
@@ -620,7 +618,7 @@ function bk() {
             ;;
         restore)
             if [ -z "$server" ] || [ -z "$name" ]; then
-                echo -e "\e[1;31m✘ Usage: bk restore <server> <name>\e[0m"
+                echo -e "\e[1;31m✘ Usage: bk restore <server> <n>\e[0m"
                 return 1
             fi
 
@@ -651,11 +649,11 @@ function bk() {
             rm -f "$archive"
             rm -rf "$workdir"
             echo -e "\e[1;32m✔ Restore complete (merge mode).\e[0m"
-            echo -e "\e[1;33mBehavior:\e[0m writable dirs and configs merge হয়েছে, packages manifest থেকেও apply করা হয়েছে."
+            echo -e "\e[1;33mBehavior:\e[0m writable dirs and configs merge হয়েছে, packages manifest থেকেও apply করা হয়েছে."
             ;;
         restore-at)
             if [ -z "$server" ] || [ -z "$name" ] || [ -z "$stamp" ]; then
-                echo -e "\e[1;31m✘ Usage: bk restore-at <server> <name> <timestamp>\e[0m"
+                echo -e "\e[1;31m✘ Usage: bk restore-at <server> <n> <timestamp>\e[0m"
                 echo -e "\e[1;33mExample:\e[0m bk restore-at srv-a test1 20260420-154500"
                 return 1
             fi
@@ -692,7 +690,7 @@ function bk() {
             ;;
         clean-restore)
             if [ -z "$server" ] || [ -z "$name" ]; then
-                echo -e "\e[1;31m✘ Usage: bk clean-restore <server> <name>\e[0m"
+                echo -e "\e[1;31m✘ Usage: bk clean-restore <server> <n>\e[0m"
                 return 1
             fi
 
@@ -729,17 +727,17 @@ function bk() {
             rm -f "$archive"
             rm -rf "$workdir"
             echo -e "\e[1;32m✔ Clean restore complete.\e[0m"
-            echo -e "\e[1;33mBehavior:\e[0m /home/devuser, /root, /usr/local, /opt clear করে restore করা হয়েছে; /etc merge হয়েছে."
+            echo -e "\e[1;33mBehavior:\e[0m /home/devuser, /root, /usr/local, /opt clear করে restore করা হয়েছে; /etc merge হয়েছে."
             ;;
         *)
             echo -e "\n\e[1;36m📦 Backup Commands\e[0m"
             echo -e "\e[90m────────────────────────────────────────────────────────────────────\e[0m"
-            echo -e "  bk save <server> <name>"
+            echo -e "  bk save <server> <n>"
             echo -e "  bk list <server>"
-            echo -e "  bk inspect <server> <name>"
-            echo -e "  bk restore <server> <name>"
-            echo -e "  bk restore-at <server> <name> <timestamp>"
-            echo -e "  bk clean-restore <server> <name>"
+            echo -e "  bk inspect <server> <n>"
+            echo -e "  bk restore <server> <n>"
+            echo -e "  bk restore-at <server> <n> <timestamp>"
+            echo -e "  bk clean-restore <server> <n>"
             echo -e "\e[90m────────────────────────────────────────────────────────────────────\e[0m\n"
             return 1
             ;;
