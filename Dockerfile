@@ -1825,7 +1825,7 @@ export BK_AWS_SECRET_ACCESS_KEY="${BK_AWS_SECRET_ACCESS_KEY}"
 export BK_AWS_REGION="${BK_AWS_REGION:-auto}"
 EOF
 
-chmod 600 /etc/profile.d/railway_env.sh
+chmod 644 /etc/profile.d/railway_env.sh
 chown root:root /etc/profile.d/railway_env.sh
 
 /usr/sbin/sshd
