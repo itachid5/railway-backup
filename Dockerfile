@@ -1583,7 +1583,9 @@ function NET() {
     rx_pkts=$3; tx_pkts=$11
     if (rx_bytes+tx_bytes > 0) {
       split("B KB MB GB TB", u, " ")
+      # RX human
       rx=rx_bytes; ri=1; while(rx>=1024 && ri<5){rx/=1024; ri++}
+      # TX human
       tx=tx_bytes; ti=1; while(tx>=1024 && ti<5){tx/=1024; ti++}
       printf "  %-12s %-18s %-18s %-12s %-12s\n", iface, sprintf("%.1f %s",rx,u[ri]), sprintf("%.1f %s",tx,u[ti]), rx_pkts, tx_pkts
     }
@@ -1591,6 +1593,7 @@ function NET() {
 
   echo -e "${C_G}────────────────────────────────────────────────────────────────────${C_R}"
 
+  # Active connections summary
   local tcp_count udp_count listen_count
   tcp_count=$(ss -t 2>/dev/null | grep -c ESTAB || echo 0)
   udp_count=$(ss -u 2>/dev/null | grep -v "^Netid" | wc -l || echo 0)
@@ -1603,11 +1606,13 @@ function NET() {
 
   echo -e "${C_G}────────────────────────────────────────────────────────────────────${C_R}"
 
+  # DNS info
   echo -e " ${C_Y}🔍 DNS Resolvers:${C_R}"
   grep "^nameserver" /etc/resolv.conf 2>/dev/null | awk '{printf "  %s\n", $2}' | head -n 3
 
   echo -e "${C_G}────────────────────────────────────────────────────────────────────${C_R}"
 
+  # IP addresses
   echo -e " ${C_Y}🏠 IP Addresses:${C_R}"
   ip -4 addr show 2>/dev/null | awk '/inet / {printf "  %-12s : %s\n", $NF, $2}' | head -n 5
 
@@ -1618,6 +1623,7 @@ function NET() {
 function netlive() {
   echo -e "\e[1;36mLive network monitor. Press Ctrl+C to stop.\e[0m"
   local prev_rx prev_tx cur_rx cur_tx iface
+  # Pick first non-loopback interface
   iface=$(ip -o link show 2>/dev/null | awk -F': ' '!/lo/{print $2; exit}')
   [ -z "$iface" ] && iface="eth0"
 
@@ -1797,6 +1803,8 @@ EOF
 
 RUN cat /tmp/setup.sh >> /home/devuser/.bashrc && \
     cat /tmp/setup.sh >> /root/.bashrc && \
+    printf '\nif [ -f /etc/profile.d/railway_env.sh ]; then\n    source /etc/profile.d/railway_env.sh\nfi\n' >> /home/devuser/.bashrc && \
+    printf '\nif [ -f /etc/profile.d/railway_env.sh ]; then\n    source /etc/profile.d/railway_env.sh\nfi\n' >> /root/.bashrc && \
     chown devuser:devuser /home/devuser/.bashrc && \
     rm /tmp/setup.sh
 
@@ -1806,6 +1814,18 @@ RUN cat /tmp/setup.sh >> /home/devuser/.bashrc && \
 RUN cat > /start.sh <<'SH'
 #!/bin/bash
 set -e
+
+cat > /etc/profile.d/railway_env.sh <<EOF
+export BK_S3_ENDPOINT="${BK_S3_ENDPOINT}"
+export BK_S3_BUCKET="${BK_S3_BUCKET}"
+export BK_AWS_ACCESS_KEY_ID="${BK_AWS_ACCESS_KEY_ID}"
+export BK_AWS_SECRET_ACCESS_KEY="${BK_AWS_SECRET_ACCESS_KEY}"
+export BK_AWS_REGION="${BK_AWS_REGION:-auto}"
+EOF
+
+chmod 600 /etc/profile.d/railway_env.sh
+chown root:root /etc/profile.d/railway_env.sh
+
 /usr/sbin/sshd
 tail -f /dev/null
 SH
