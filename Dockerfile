@@ -36,6 +36,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /tmp/* /var/tmp/* /root/.cache/pip
 
 # --------------------------------------------------
+# Extra server tools + cloudflared
+# --------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tmux screen vim zip rsync socat telnet ncdu \
+    && mkdir -p /usr/share/keyrings \
+    && curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | gpg --dearmor -o /usr/share/keyrings/cloudflare-main.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared jammy main" > /etc/apt/sources.list.d/cloudflared.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends cloudflared \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /tmp/* /var/tmp/*
+
+# --------------------------------------------------
 # Install Node.js LTS + Codex at build time
 # --------------------------------------------------
 RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
@@ -427,7 +440,8 @@ function _bk_capture_manifests() {
     local manifest_dir="$1"
     mkdir -p "$manifest_dir"
 
-    apt-mark showmanual 2>/dev/null | sort > "${manifest_dir}/apt-manual.txt" || true
+    local _BUILTIN_FILTER="^(tzdata|openssh-server|sudo|curl|wget|git|nano|procps|net-tools|iputils-ping|dnsutils|lsof|htop|jq|speedtest-cli|unzip|tree|python3|python3-pip|python3-venv|ca-certificates|gnupg|nodejs|tailscale|tmux|screen|vim|zip|rsync|socat|telnet|ncdu|cloudflared)$"
+    apt-mark showmanual 2>/dev/null | sort | grep -vE "$_BUILTIN_FILTER" > "${manifest_dir}/apt-manual.txt" || true
     sudo dpkg --get-selections 2>/dev/null > "${manifest_dir}/dpkg-selections.txt" || true
     pip3 freeze 2>/dev/null | sort | grep -viE '^(awscli|botocore|s3transfer|jmespath|docutils|colorama|rsa|pyasn1|python-dateutil|urllib3|PyYAML|six)==' > "${manifest_dir}/pip-freeze.txt" || true
     npm -g ls --depth=0 --parseable 2>/dev/null | tail -n +2 | xargs -r -n 1 basename | sort -u | grep -v '^codex$' > "${manifest_dir}/npm-global.txt" || true
@@ -1294,16 +1308,14 @@ function cpuuse() {
   printf "  %-20s : %s\n" "Limit" "$limit_label"
   if [ "$pct" != "-" ]; then
     printf "  %-20s : %s%%\n" "Percent of Limit" "$pct"
-  else
-    printf "  %-20s : %s\n" "Percent of Limit" "shared / not fixed"
-  fi
-  if [ -n "$avg30" ]; then
-    printf "  %-20s : %s vCPU\n" "Local Avg (30s)" "$avg30"
   fi
   printf "  %-20s : %s\n" "Throttle Events" "$thr_n"
   printf "  %-20s : %s%%\n" "Throttle Time" "$thr_pct"
-  printf "  %-20s : %s%%\n" "CPU PSI some avg10" "$psi_some"
-  printf "  %-20s : %s%%\n" "CPU PSI full avg10" "$psi_full"
+  printf "  %-20s : %s%%\n" "PSI some avg10" "$psi_some"
+  printf "  %-20s : %s%%\n" "PSI full avg10" "$psi_full"
+  if [ -n "$avg30" ]; then
+    printf "  %-20s : %s vCPU\n" "Local Avg 30s" "$avg30"
+  fi
   echo -e "\e[90m────────────────────────────────────────────────────────────────────\e[0m"
   echo -e "\e[1;33mTip:\e[0m For a calmer number closer to dashboard trend, run \e[1;36mcpu 5\e[0m or \e[1;36mcpulive 2\e[0m.\n"
 }
