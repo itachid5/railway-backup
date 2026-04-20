@@ -79,6 +79,8 @@ RUN echo "export PS1='\[\e[1;32m\]\u@phoenix\[\e[0m\]:\[\e[1;36m\]\w\[\e[0m\]\$ 
 # --------------------------------------------------
 RUN cat > /tmp/setup.sh <<'EOF'
 
+export PHOENIX_CPU_HISTORY_FILE="/tmp/.phoenix_cpu_history_${USER}"
+
 # ==========================================
 # 🚀 SYSTEM ALIASES (BUILT-IN)
 # ==========================================
@@ -832,9 +834,9 @@ _cpu_history_file() {
 _cpu_record_history() {
   local used="$1" limit="$2" pct="$3" file tmp
   file="$(_cpu_history_file)"
-  tmp="${file}.tmp"
+  tmp="${file}.tmp.$$"
   printf '%s|%s|%s|%s\n' "$(date +%s)" "$used" "$limit" "$pct" >> "$file"
-  tail -n 120 "$file" > "$tmp" 2>/dev/null && mv "$tmp" "$file"
+  tail -n 120 "$file" > "$tmp" 2>/dev/null && mv -f "$tmp" "$file"
 }
 
 _cpu_avg_history() {
@@ -1692,19 +1694,19 @@ function netports() {
 }
 
 function dnslookup() {
-  if [ -z "$1" ]; then
-    echo -e "\e[1;31m✘ Usage: dnslookup <domain>\e[0m"
-    return 1
-  fi
-  echo -e "\n\e[1;36m🔍 DNS Lookup: $1\e[0m"
-  echo -e "\e[90m────────────────────────────────────────────────────────────────────\e[0m"
-  echo -e "\e[1;33mA Records:\e[0m"
-  host -t A "$1" 2>/dev/null | grep "has address" | sed 's/^/  /'
-  echo -e "\e[1;33mMX Records:\e[0m"
-  host -t MX "$1" 2>/dev/null | grep "mail" | sed 's/^/  /'
-  echo -e "\e[1;33mNS Records:\e[0m"
-  host -t NS "$1" 2>/dev/null | grep "name server" | sed 's/^/  /'
-  echo -e "\e[90m────────────────────────────────────────────────────────────────────\e[0m\n"
+    if [ -z "$1" ]; then
+        echo -e "\e[1;31m✘ Usage: dnslookup <domain>\e[0m"
+        return 1
+    fi
+    echo -e "\n\e[1;36m🔍 DNS Lookup: $1\e[0m"
+    echo -e "\e[90m────────────────────────────────────────────────────────────────────\e[0m"
+    echo -e "\e[1;33mA Records:\e[0m"
+    host -t A "$1" 2>/dev/null | grep "has address" | sed 's/^/  /'
+    echo -e "\e[1;33mMX Records:\e[0m"
+    host -t MX "$1" 2>/dev/null | grep "mail" | sed 's/^/  /'
+    echo -e "\e[1;33mNS Records:\e[0m"
+    host -t NS "$1" 2>/dev/null | grep "name server" | sed 's/^/  /'
+    echo -e "\e[90m────────────────────────────────────────────────────────────────────\e[0m\n"
 }
 
 # ==========================================
