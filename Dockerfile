@@ -481,6 +481,8 @@ function _bk_extract_and_apply() {
         sudo cp -a "$workdir/root" /
     fi
 
+    sudo rm -f "$workdir/etc/hostname" "$workdir/etc/hosts" "$workdir/etc/resolv.conf" "$workdir/etc/machine-id" 2>/dev/null || true
+
     if [ -d "$workdir/etc" ]; then
         sudo mkdir -p /etc
         sudo cp -a "$workdir/etc/." /etc/
@@ -545,6 +547,10 @@ function bk() {
             _bk_capture_manifests "$manifest_dir"
 
             tar -czpf "$archive" --ignore-failed-read \
+                --exclude='etc/hostname' \
+                --exclude='etc/hosts' \
+                --exclude='etc/resolv.conf' \
+                --exclude='etc/machine-id' \
                 -C / home/devuser root etc usr/local opt \
                 -C "$tmp_dir" "$(basename "$manifest_dir")"
 
