@@ -430,7 +430,9 @@ function _bk_capture_manifests() {
     apt-mark showmanual 2>/dev/null | sort > "${manifest_dir}/apt-manual.txt" || true
     sudo dpkg --get-selections 2>/dev/null > "${manifest_dir}/dpkg-selections.txt" || true
     pip3 freeze 2>/dev/null | sort > "${manifest_dir}/pip-freeze.txt" || true
+    sed -i -E '/^(awscli|botocore|s3transfer|jmespath|docutils|colorama|rsa|pyasn1|python-dateutil|urllib3|pyyaml|six)(==|$)/Id' "${manifest_dir}/pip-freeze.txt" 2>/dev/null || true
     npm -g ls --depth=0 --parseable 2>/dev/null | tail -n +2 | xargs -r -n 1 basename | sort -u > "${manifest_dir}/npm-global.txt" || true
+    sed -i -E '/^(@openai\/codex|codex)$/d' "${manifest_dir}/npm-global.txt" 2>/dev/null || true
     tmux list-sessions -F "#{session_name}" 2>/dev/null | sort > "${manifest_dir}/tmux-sessions.txt" || true
 }
 
