@@ -28,11 +28,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata openssh-server sudo curl wget git nano procps net-tools iputils-ping dnsutils \
     lsof htop jq speedtest-cli unzip tree python3 python3-pip python3-venv \
     ca-certificates gnupg \
+    && pip3 install awscli \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
     && echo $TZ > /etc/timezone \
     && curl -fsSL https://tailscale.com/install.sh | sh \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /tmp/* /var/tmp/*
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /tmp/* /var/tmp/* /root/.cache/pip
 
 # --------------------------------------------------
 # Install Node.js LTS + Codex at build time
@@ -300,6 +301,11 @@ function cmds() {
     pcmd "syshealth" "Full system health report"
     pcmd "uptime2" "Pretty uptime display"
     pcmd "envlist" "Show all env variables"
+    pcmd "bk save <srv> <nm>" "Backup /home/devuser to R2"
+    pcmd "bk list <srv>" "List server backups"
+    pcmd "bk inspect <srv> <nm>" "Extract latest backup to /tmp"
+    pcmd "bk restore <srv> <nm>" "Merge restore latest backup"
+    pcmd "bk clean-restore <srv> <nm>" "Clear /home/devuser then restore"
 
     echo -e "\n\e[1;35m👤 My Personal Shortcuts\e[0m"
     if [ -f "$CUSTOM_ALIAS_FILE" ] && [ -s "$CUSTOM_ALIAS_FILE" ]; then
@@ -353,6 +359,220 @@ function ex() {
     else
         echo -e "\e[1;31m✘ '$1' is not a valid file\e[0m"
     fi
+}
+
+# ==========================================
+# BACKUP / RESTORE (DEVUSER ONLY)
+# ==========================================
+
+function _bk_require_env() {
+    if [ -z "$BK_S3_ENDPOINT" ] || [ -z "$BK_S3_BUCKET" ] || [ -z "$BK_AWS_ACCESS_KEY_ID" ] || [ -z "$BK_AWS_SECRET_ACCESS_KEY" ]; then
+        echo -e "\e[1;31m✘ Backup env vars missing.\e[0m"
+        echo -e "Required:"
+        echo -e "  BK_S3_ENDPOINT"
+        echo -e "  BK_S3_BUCKET"
+        echo -e "  BK_AWS_ACCESS_KEY_ID"
+        echo -e "  BK_AWS_SECRET_ACCESS_KEY"
+        echo -e "Optional:"
+        echo -e "  BK_AWS_REGION=auto"
+        return 1
+    fi
+
+    export AWS_ACCESS_KEY_ID="$BK_AWS_ACCESS_KEY_ID"
+    export AWS_SECRET_ACCESS_KEY="$BK_AWS_SECRET_ACCESS_KEY"
+    export AWS_DEFAULT_REGION="${BK_AWS_REGION:-auto}"
+    return 0
+}
+
+function _bk_latest_key() {
+    local server="$1"
+    local name="$2"
+    aws --endpoint-url "$BK_S3_ENDPOINT" s3 ls "s3://${BK_S3_BUCKET}/servers/${server}/${name}/" --recursive 2>/dev/null | sort | tail -n 1 | awk '{print $4}'
+}
+
+function _bk_clean_devuser_home() {
+    shopt -s dotglob nullglob
+    for item in /home/devuser/* /home/devuser/.[!.]* /home/devuser/..?*; do
+        [ -e "$item" ] || continue
+        rm -rf "$item"
+    done
+    shopt -u dotglob nullglob
+}
+
+function bk() {
+    local action="$1"
+    local server="$2"
+    local name="$3"
+    local tmp_dir="/tmp/bkwork"
+    local inspect_base="/tmp/bk-inspect"
+    local archive=""
+    local key=""
+    local latest_key=""
+    local stamp=""
+    local target_dir=""
+
+    _bk_require_env || return 1
+    mkdir -p "$tmp_dir" "$inspect_base"
+
+    case "$action" in
+        save)
+            if [ -z "$server" ] || [ -z "$name" ]; then
+                echo -e "\e[1;31m✘ Usage: bk save <server> <name>\e[0m"
+                return 1
+            fi
+
+            stamp=$(date +"%Y%m%d-%H%M%S")
+            archive="${tmp_dir}/${server}-${name}-${stamp}.tar.gz"
+            key="servers/${server}/${name}/${server}-${name}-${stamp}.tar.gz"
+
+            echo -e "\e[1;33m⌛ Creating backup archive from /home/devuser ...\e[0m"
+            tar -czpf "$archive" -C / home/devuser
+
+            echo -e "\e[1;33m⌛ Uploading to R2 ...\e[0m"
+            aws --endpoint-url "$BK_S3_ENDPOINT" s3 cp "$archive" "s3://${BK_S3_BUCKET}/${key}" --only-show-errors || {
+                rm -f "$archive"
+                echo -e "\e[1;31m✘ Upload failed.\e[0m"
+                return 1
+            }
+
+            rm -f "$archive"
+            echo -e "\e[1;32m✔ Backup saved successfully.\e[0m"
+            echo -e "\e[1;36mKey:\e[0m ${key}"
+            ;;
+        list)
+            if [ -z "$server" ]; then
+                echo -e "\e[1;31m✘ Usage: bk list <server>\e[0m"
+                return 1
+            fi
+
+            echo -e "\n\e[1;36m📦 Backups for server: ${server}\e[0m"
+            echo -e "\e[90m────────────────────────────────────────────────────────────────────\e[0m"
+            aws --endpoint-url "$BK_S3_ENDPOINT" s3 ls "s3://${BK_S3_BUCKET}/servers/${server}/" --recursive
+            echo -e "\e[90m────────────────────────────────────────────────────────────────────\e[0m\n"
+            ;;
+        inspect)
+            if [ -z "$server" ] || [ -z "$name" ]; then
+                echo -e "\e[1;31m✘ Usage: bk inspect <server> <name>\e[0m"
+                return 1
+            fi
+
+            latest_key=$(_bk_latest_key "$server" "$name")
+            if [ -z "$latest_key" ]; then
+                echo -e "\e[1;31m✘ No backup found for server='${server}' name='${name}'.\e[0m"
+                return 1
+            fi
+
+            archive="${tmp_dir}/inspect-${server}-${name}.tar.gz"
+            stamp=$(basename "$latest_key" .tar.gz)
+            target_dir="${inspect_base}/${server}/${name}/${stamp}"
+
+            rm -rf "$target_dir"
+            mkdir -p "$target_dir"
+
+            echo -e "\e[1;33m⌛ Downloading latest backup for inspect ...\e[0m"
+            aws --endpoint-url "$BK_S3_ENDPOINT" s3 cp "s3://${BK_S3_BUCKET}/${latest_key}" "$archive" --only-show-errors || {
+                rm -f "$archive"
+                echo -e "\e[1;31m✘ Download failed.\e[0m"
+                return 1
+            }
+
+            echo -e "\e[1;33m⌛ Extracting to inspect path ...\e[0m"
+            tar -xzpf "$archive" -C "$target_dir" || {
+                rm -f "$archive"
+                echo -e "\e[1;31m✘ Extract failed.\e[0m"
+                return 1
+            }
+
+            rm -f "$archive"
+            echo -e "\e[1;32m✔ Inspect copy is ready.\e[0m"
+            echo -e "\e[1;36mPath:\e[0m ${target_dir}"
+            echo -e "\e[1;33mTip:\e[0m Run: tree -a \"${target_dir}/home/devuser\" | head -n 100"
+            ;;
+        restore)
+            if [ -z "$server" ] || [ -z "$name" ]; then
+                echo -e "\e[1;31m✘ Usage: bk restore <server> <name>\e[0m"
+                return 1
+            fi
+
+            latest_key=$(_bk_latest_key "$server" "$name")
+            if [ -z "$latest_key" ]; then
+                echo -e "\e[1;31m✘ No backup found for server='${server}' name='${name}'.\e[0m"
+                return 1
+            fi
+
+            archive="${tmp_dir}/restore-${server}-${name}.tar.gz"
+
+            echo -e "\e[1;33m⌛ Downloading latest backup ...\e[0m"
+            aws --endpoint-url "$BK_S3_ENDPOINT" s3 cp "s3://${BK_S3_BUCKET}/${latest_key}" "$archive" --only-show-errors || {
+                rm -f "$archive"
+                echo -e "\e[1;31m✘ Download failed.\e[0m"
+                return 1
+            }
+
+            echo -e "\e[1;33m⌛ Restoring in merge mode ...\e[0m"
+            tar -xzpf "$archive" -C / || {
+                rm -f "$archive"
+                echo -e "\e[1;31m✘ Restore failed.\e[0m"
+                return 1
+            }
+
+            chown -R devuser:devuser /home/devuser
+            rm -f "$archive"
+            echo -e "\e[1;32m✔ Restore complete (merge mode).\e[0m"
+            echo -e "\e[1;33mBehavior:\e[0m same files overwrite হবে, extra existing files থেকে যাবে."
+            ;;
+        clean-restore)
+            if [ -z "$server" ] || [ -z "$name" ]; then
+                echo -e "\e[1;31m✘ Usage: bk clean-restore <server> <name>\e[0m"
+                return 1
+            fi
+
+            latest_key=$(_bk_latest_key "$server" "$name")
+            if [ -z "$latest_key" ]; then
+                echo -e "\e[1;31m✘ No backup found for server='${server}' name='${name}'.\e[0m"
+                return 1
+            fi
+
+            archive="${tmp_dir}/clean-restore-${server}-${name}.tar.gz"
+
+            echo -e "\e[1;33m⌛ Downloading latest backup ...\e[0m"
+            aws --endpoint-url "$BK_S3_ENDPOINT" s3 cp "s3://${BK_S3_BUCKET}/${latest_key}" "$archive" --only-show-errors || {
+                rm -f "$archive"
+                echo -e "\e[1;31m✘ Download failed.\e[0m"
+                return 1
+            }
+
+            echo -e "\e[1;33m⌛ Clearing /home/devuser ...\e[0m"
+            _bk_clean_devuser_home || {
+                rm -f "$archive"
+                echo -e "\e[1;31m✘ Could not clear /home/devuser.\e[0m"
+                return 1
+            }
+
+            echo -e "\e[1;33m⌛ Restoring clean copy ...\e[0m"
+            tar -xzpf "$archive" -C / || {
+                rm -f "$archive"
+                echo -e "\e[1;31m✘ Restore failed.\e[0m"
+                return 1
+            }
+
+            chown -R devuser:devuser /home/devuser
+            rm -f "$archive"
+            echo -e "\e[1;32m✔ Clean restore complete.\e[0m"
+            echo -e "\e[1;33mBehavior:\e[0m /home/devuser আগের content clear করে exact backup restore করা হয়েছে."
+            ;;
+        *)
+            echo -e "\n\e[1;36m📦 Backup Commands\e[0m"
+            echo -e "\e[90m────────────────────────────────────────────────────────────────────\e[0m"
+            echo -e "  bk save <server> <name>"
+            echo -e "  bk list <server>"
+            echo -e "  bk inspect <server> <name>"
+            echo -e "  bk restore <server> <name>"
+            echo -e "  bk clean-restore <server> <name>"
+            echo -e "\e[90m────────────────────────────────────────────────────────────────────\e[0m\n"
+            return 1
+            ;;
+    esac
 }
 
 # ==========================================
@@ -1363,9 +1583,7 @@ function NET() {
     rx_pkts=$3; tx_pkts=$11
     if (rx_bytes+tx_bytes > 0) {
       split("B KB MB GB TB", u, " ")
-      # RX human
       rx=rx_bytes; ri=1; while(rx>=1024 && ri<5){rx/=1024; ri++}
-      # TX human
       tx=tx_bytes; ti=1; while(tx>=1024 && ti<5){tx/=1024; ti++}
       printf "  %-12s %-18s %-18s %-12s %-12s\n", iface, sprintf("%.1f %s",rx,u[ri]), sprintf("%.1f %s",tx,u[ti]), rx_pkts, tx_pkts
     }
@@ -1373,7 +1591,6 @@ function NET() {
 
   echo -e "${C_G}────────────────────────────────────────────────────────────────────${C_R}"
 
-  # Active connections summary
   local tcp_count udp_count listen_count
   tcp_count=$(ss -t 2>/dev/null | grep -c ESTAB || echo 0)
   udp_count=$(ss -u 2>/dev/null | grep -v "^Netid" | wc -l || echo 0)
@@ -1386,13 +1603,11 @@ function NET() {
 
   echo -e "${C_G}────────────────────────────────────────────────────────────────────${C_R}"
 
-  # DNS info
   echo -e " ${C_Y}🔍 DNS Resolvers:${C_R}"
   grep "^nameserver" /etc/resolv.conf 2>/dev/null | awk '{printf "  %s\n", $2}' | head -n 3
 
   echo -e "${C_G}────────────────────────────────────────────────────────────────────${C_R}"
 
-  # IP addresses
   echo -e " ${C_Y}🏠 IP Addresses:${C_R}"
   ip -4 addr show 2>/dev/null | awk '/inet / {printf "  %-12s : %s\n", $NF, $2}' | head -n 5
 
@@ -1403,7 +1618,6 @@ function NET() {
 function netlive() {
   echo -e "\e[1;36mLive network monitor. Press Ctrl+C to stop.\e[0m"
   local prev_rx prev_tx cur_rx cur_tx iface
-  # Pick first non-loopback interface
   iface=$(ip -o link show 2>/dev/null | awk -F': ' '!/lo/{print $2; exit}')
   [ -z "$iface" ] && iface="eth0"
 
@@ -1576,6 +1790,7 @@ if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ]; then
     printf "   \e[1;32m%-10s\e[0m : %s\n" "DISK" "Full disk usage"
     printf "   \e[1;32m%-10s\e[0m : %s\n" "NET" "Network traffic info"
     printf "   \e[1;32m%-10s\e[0m : %s\n" "dcodex" "Show Codex status"
+    printf "   \e[1;32m%-10s\e[0m : %s\n" "bk" "Backup/Restore helper"
     printf "   \e[1;36m%-10s\e[0m : \e[1;36m%s\e[0m\n\n" "cmds" "View ALL Shortcuts ⚡"
 fi
 EOF
