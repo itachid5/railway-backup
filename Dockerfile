@@ -307,6 +307,7 @@ function cmds() {
     pcmd "bk list <srv>" "List server backups"
     pcmd "bk inspect <srv> <nm>" "Extract latest backup to /tmp"
     pcmd "bk restore <srv> <nm>" "Merge restore latest backup"
+    pcmd "bk restore-at <srv> <nm> <ts>" "Restore exact timestamp backup"
     pcmd "bk clean-restore <srv> <nm>" "Clear /home/devuser then restore"
 
     echo -e "\n\e[1;35m👤 My Personal Shortcuts\e[0m"
@@ -392,6 +393,18 @@ function _bk_latest_key() {
     aws --endpoint-url "$BK_S3_ENDPOINT" s3 ls "s3://${BK_S3_BUCKET}/servers/${server}/${name}/" --recursive 2>/dev/null | sort | tail -n 1 | awk '{print $4}'
 }
 
+function _bk_exact_key() {
+    local server="$1"
+    local name="$2"
+    local stamp="$3"
+    echo "servers/${server}/${name}/${server}-${name}-${stamp}.tar.gz"
+}
+
+function _bk_key_exists() {
+    local key="$1"
+    aws --endpoint-url "$BK_S3_ENDPOINT" s3 ls "s3://${BK_S3_BUCKET}/${key}" >/dev/null 2>&1
+}
+
 function _bk_clean_devuser_home() {
     shopt -s dotglob nullglob
     for item in /home/devuser/* /home/devuser/.[!.]* /home/devuser/..?*; do
@@ -405,12 +418,13 @@ function bk() {
     local action="$1"
     local server="$2"
     local name="$3"
+    local stamp="$4"
     local tmp_dir="/tmp/bkwork"
     local inspect_base="/tmp/bk-inspect"
     local archive=""
     local key=""
     local latest_key=""
-    local stamp=""
+    local now_stamp=""
     local target_dir=""
 
     _bk_require_env || return 1
@@ -423,9 +437,9 @@ function bk() {
                 return 1
             fi
 
-            stamp=$(date +"%Y%m%d-%H%M%S")
-            archive="${tmp_dir}/${server}-${name}-${stamp}.tar.gz"
-            key="servers/${server}/${name}/${server}-${name}-${stamp}.tar.gz"
+            now_stamp=$(date +"%Y%m%d-%H%M%S")
+            archive="${tmp_dir}/${server}-${name}-${now_stamp}.tar.gz"
+            key="servers/${server}/${name}/${server}-${name}-${now_stamp}.tar.gz"
 
             echo -e "\e[1;33m⌛ Creating backup archive from /home/devuser ...\e[0m"
             tar -czpf "$archive" -C / home/devuser
@@ -465,8 +479,8 @@ function bk() {
             fi
 
             archive="${tmp_dir}/inspect-${server}-${name}.tar.gz"
-            stamp=$(basename "$latest_key" .tar.gz)
-            target_dir="${inspect_base}/${server}/${name}/${stamp}"
+            now_stamp=$(basename "$latest_key" .tar.gz)
+            target_dir="${inspect_base}/${server}/${name}/${now_stamp}"
 
             rm -rf "$target_dir"
             mkdir -p "$target_dir"
@@ -523,6 +537,41 @@ function bk() {
             echo -e "\e[1;32m✔ Restore complete (merge mode).\e[0m"
             echo -e "\e[1;33mBehavior:\e[0m same files overwrite হবে, extra existing files থেকে যাবে."
             ;;
+        restore-at)
+            if [ -z "$server" ] || [ -z "$name" ] || [ -z "$stamp" ]; then
+                echo -e "\e[1;31m✘ Usage: bk restore-at <server> <name> <timestamp>\e[0m"
+                echo -e "\e[1;33mExample:\e[0m bk restore-at srv-a test1 20260420-154500"
+                return 1
+            fi
+
+            key=$(_bk_exact_key "$server" "$name" "$stamp")
+            if ! _bk_key_exists "$key"; then
+                echo -e "\e[1;31m✘ Exact backup not found.\e[0m"
+                echo -e "\e[1;36mExpected key:\e[0m ${key}"
+                return 1
+            fi
+
+            archive="${tmp_dir}/restore-at-${server}-${name}-${stamp}.tar.gz"
+
+            echo -e "\e[1;33m⌛ Downloading exact backup ...\e[0m"
+            aws --endpoint-url "$BK_S3_ENDPOINT" s3 cp "s3://${BK_S3_BUCKET}/${key}" "$archive" --only-show-errors || {
+                rm -f "$archive"
+                echo -e "\e[1;31m✘ Download failed.\e[0m"
+                return 1
+            }
+
+            echo -e "\e[1;33m⌛ Restoring exact backup in merge mode ...\e[0m"
+            tar -xzpf "$archive" -C / || {
+                rm -f "$archive"
+                echo -e "\e[1;31m✘ Restore failed.\e[0m"
+                return 1
+            }
+
+            chown -R devuser:devuser /home/devuser
+            rm -f "$archive"
+            echo -e "\e[1;32m✔ Exact restore complete (merge mode).\e[0m"
+            echo -e "\e[1;36mRestored:\e[0m ${key}"
+            ;;
         clean-restore)
             if [ -z "$server" ] || [ -z "$name" ]; then
                 echo -e "\e[1;31m✘ Usage: bk clean-restore <server> <name>\e[0m"
@@ -570,6 +619,7 @@ function bk() {
             echo -e "  bk list <server>"
             echo -e "  bk inspect <server> <name>"
             echo -e "  bk restore <server> <name>"
+            echo -e "  bk restore-at <server> <name> <timestamp>"
             echo -e "  bk clean-restore <server> <name>"
             echo -e "\e[90m────────────────────────────────────────────────────────────────────\e[0m\n"
             return 1
@@ -1625,13 +1675,8 @@ function NET() {
 function netlive() {
   echo -e "\e[1;36mLive network monitor. Press Ctrl+C to stop.\e[0m"
   local prev_rx prev_tx cur_rx cur_tx iface
-  # Pick first non-loopback interface
   iface=$(ip -o link show 2>/dev/null | awk -F': ' '!/lo/{print $2; exit}')
   [ -z "$iface" ] && iface="eth0"
-
-  _get_bytes() {
-    awk -v iface="${iface}:" '$1==iface {print $2, $10}' /proc/net/dev 2>/dev/null
-  }
 
   prev_rx=$(awk -v iface="${iface}:" '$1==iface {print $2}' /proc/net/dev 2>/dev/null)
   prev_tx=$(awk -v iface="${iface}:" '$1==iface {print $10}' /proc/net/dev 2>/dev/null)
@@ -1694,19 +1739,19 @@ function netports() {
 }
 
 function dnslookup() {
-    if [ -z "$1" ]; then
-        echo -e "\e[1;31m✘ Usage: dnslookup <domain>\e[0m"
-        return 1
-    fi
-    echo -e "\n\e[1;36m🔍 DNS Lookup: $1\e[0m"
-    echo -e "\e[90m────────────────────────────────────────────────────────────────────\e[0m"
-    echo -e "\e[1;33mA Records:\e[0m"
-    host -t A "$1" 2>/dev/null | grep "has address" | sed 's/^/  /'
-    echo -e "\e[1;33mMX Records:\e[0m"
-    host -t MX "$1" 2>/dev/null | grep "mail" | sed 's/^/  /'
-    echo -e "\e[1;33mNS Records:\e[0m"
-    host -t NS "$1" 2>/dev/null | grep "name server" | sed 's/^/  /'
-    echo -e "\e[90m────────────────────────────────────────────────────────────────────\e[0m\n"
+  if [ -z "$1" ]; then
+    echo -e "\e[1;31m✘ Usage: dnslookup <domain>\e[0m"
+    return 1
+  fi
+  echo -e "\n\e[1;36m🔍 DNS Lookup: $1\e[0m"
+  echo -e "\e[90m────────────────────────────────────────────────────────────────────\e[0m"
+  echo -e "\e[1;33mA Records:\e[0m"
+  host -t A "$1" 2>/dev/null | grep "has address" | sed 's/^/  /'
+  echo -e "\e[1;33mMX Records:\e[0m"
+  host -t MX "$1" 2>/dev/null | grep "mail" | sed 's/^/  /'
+  echo -e "\e[1;33mNS Records:\e[0m"
+  host -t NS "$1" 2>/dev/null | grep "name server" | sed 's/^/  /'
+  echo -e "\e[90m────────────────────────────────────────────────────────────────────\e[0m\n"
 }
 
 # ==========================================
